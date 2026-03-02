@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mogusprotocol web</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/comic-mono@0.0.1/index.min.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Comic Mono', monospace;
+    background: #faf9f7;
+    color: #222;
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.2rem; }
+  .subtitle { color: #777; font-size: 0.8rem; margin-bottom: 2.5rem; }
+  h2 { font-size: 0.95rem; margin-bottom: 0.3rem; }
+  section { margin-bottom: 2rem; }
+  textarea {
+    width: 100%;
+    background: #fff;
+    border: 1.5px solid #ccc;
+    color: #222;
+    font-family: 'Comic Mono', monospace;
+    font-size: 0.9rem;
+    padding: 0.5rem;
+    border-radius: 3px;
+    resize: vertical;
+    min-height: 50px;
+  }
+  textarea:focus { outline: none; border-color: #888; }
+  button {
+    background: #222;
+    color: #fff;
+    border: none;
+    padding: 0.45rem 1rem;
+    border-radius: 3px;
+    font-family: 'Comic Mono', monospace;
+    font-size: 0.85rem;
+    cursor: pointer;
+    margin-top: 0.5rem;
+  }
+  button:hover { background: #444; }
+  button:disabled { background: #bbb; cursor: not-allowed; }
+  .btn-secondary { background: #fff; color: #222; border: 1.5px solid #ccc; }
+  .btn-secondary:hover { background: #f0f0f0; }
+  audio { width: 100%; margin-top: 0.5rem; }
+  .output {
+    border: 1.5px solid #ccc;
+    border-radius: 3px;
+    padding: 0.5rem;
+    min-height: 36px;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: #fff;
+  }
+  .status { font-size: 0.75rem; color: #999; margin-top: 0.3rem; }
+  .status.error { color: #c33; }
+  .status.ok { color: #2a7; }
+  #loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: #faf9f7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  #loading-overlay.hidden { display: none; }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 2.5px solid #ddd;
+    border-top-color: #222;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-bottom: 0.8rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { color: #999; font-size: 0.85rem; }
+  .btn-row { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loading-msg">Loading Pyodide runtime...</div>
+</div>
+
+<h1>mogusprotocol</h1>
+<p class="subtitle">audio modem with among us drip carrier hopping</p>
+
+<section>
+  <h2>transmit</h2>
+  <textarea id="tx-input" placeholder="type a message...">sus</textarea>
+  <div class="btn-row">
+    <button id="tx-btn" onclick="transmit()" disabled>send</button>
+    <button id="tx-dl-btn" class="btn-secondary" onclick="downloadWav()" disabled style="display:none">save .wav</button>
+  </div>
+  <audio id="tx-audio" controls style="display:none"></audio>
+  <div class="status" id="tx-status"></div>
+</section>
+
+<section>
+  <h2>receive</h2>
+  <div class="btn-row">
+    <button id="rx-btn" onclick="toggleRecord()" disabled>record</button>
+    <label class="btn-secondary" style="padding:0.45rem 1rem;border-radius:3px;cursor:pointer;margin-top:0.5rem;font-size:0.85rem;display:inline-block;">
+      upload file
+      <input type="file" id="rx-file" accept="audio/*" onchange="decodeFile(this)" style="display:none">
+    </label>
+  </div>
+  <div class="output" id="rx-output"></div>
+  <div class="status" id="rx-status"></div>
+</section>
+
+<!-- PYTHON_SOURCES will be replaced by build.py -->
+<script id="python-sources" type="application/json">__PYTHON_SOURCES__</script>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.4/full/pyodide.js"></script>
+<script>
+let pyodide = null;
+let lastTxAudioBlob = null;
+let recording = false;
+let audioCtx = null;
+let mediaStream = null;
+let sourceNode = null;
+let recorderNode = null;
+let pcmChunks = [];
+let liveDecodeTimer = null;
+let liveChunkIndex = 0;
+
+// ── Pyodide Bootstrap ──────────────────────────────────────────────
+
+async function initPyodide() {
+  const loadingMsg = document.getElementById('loading-msg');
+
+  loadingMsg.textContent = 'Loading Pyodide runtime...';
+  pyodide = await loadPyodide();
+
+  loadingMsg.textContent = 'Loading numpy + scipy (this may take a moment)...';
+  await pyodide.loadPackage(['numpy', 'scipy']);
+
+  loadingMsg.textContent = 'Installing mogusprotocol...';
+  await installPythonSources();
+
+  loadingMsg.textContent = 'Initializing modem...';
+  await pyodide.runPythonAsync(`
+from mogusprotocol.protocol.frame import build_frame
+from mogusprotocol.dsp.modulator import PSKModulator
+from mogusprotocol.dsp.demodulator import PSKDemodulator
+from mogusprotocol.dsp.streaming_demod import StreamingDemodulator
+from mogusprotocol.protocol.constants import SAMPLE_RATE
+import numpy as np
+
+_modulator = PSKModulator()
+_demodulator = PSKDemodulator()
+_streaming_demod = None
+
+def encode_message(text):
+    bits = build_frame(text)
+    audio = _modulator.modulate(bits)
+    return audio
+
+def decode_audio(samples_js):
+    audio = np.array(samples_js, dtype=np.float64)
+    return _demodulator.demodulate(audio) or ""
+
+def live_decode_reset():
+    global _streaming_demod
+    _streaming_demod = StreamingDemodulator()
+
+def live_decode_feed(samples_js):
+    global _streaming_demod
+    if _streaming_demod is None:
+        return {"chars": "", "synced": False, "done": False, "crc": None}
+    audio = np.array(samples_js, dtype=np.float64)
+    chars = _streaming_demod.feed(audio)
+    return {
+        "chars": "".join(chars),
+        "synced": _streaming_demod.synced,
+        "done": _streaming_demod.done,
+        "crc": _streaming_demod.crc_ok,
+    }
+  `);
+
+  document.getElementById('loading-overlay').classList.add('hidden');
+  document.getElementById('tx-btn').disabled = false;
+  document.getElementById('rx-btn').disabled = false;
+}
+
+async function installPythonSources() {
+  // Try to load bundled sources first (from build.py)
+  const el = document.getElementById('python-sources');
+  let sources;
+  const raw = el.textContent.trim();
+  if (raw && raw !== '__PYTHON_SOURCES__' && raw.startsWith('{')) {
+    // Built mode: sources are inlined
+    sources = JSON.parse(raw);
+  } else {
+    // Dev mode: fetch from server
+    try {
+      sources = await fetchSourcesFromServer();
+    } catch (e) {
+      throw new Error('Could not load Python sources. Run the dev server (python3 web/serve_dev.py) or build first (python3 web/build.py).');
+    }
+  }
+
+  // Write sources to Pyodide FS
+  for (const [path, content] of Object.entries(sources)) {
+    const parts = path.split('/');
+    // Create directories
+    let dir = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir += (dir ? '/' : '') + parts[i];
+      try { pyodide.FS.mkdir(dir); } catch {}
+    }
+    pyodide.FS.writeFile(path, content);
+  }
+}
+
+async function fetchSourcesFromServer() {
+  // Dev mode: fetch the file listing from the server
+  const resp = await fetch('/api/sources');
+  return await resp.json();
+}
+
+// ── TX ─────────────────────────────────────────────────────────────
+
+async function transmit() {
+  const text = document.getElementById('tx-input').value.trim();
+  if (!text) return;
+
+  const btn = document.getElementById('tx-btn');
+  const status = document.getElementById('tx-status');
+  btn.disabled = true;
+  status.textContent = 'Encoding...';
+  status.className = 'status';
+
+  try {
+    const audioArray = await pyodide.runPythonAsync(`
+text = ${JSON.stringify(text)}
+audio = encode_message(text)
+audio.tolist()
+    `);
+
+    const samples = audioArray.toJs();
+    audioArray.destroy();
+
+    status.textContent = `Encoded ${samples.length} samples (${(samples.length / 48000).toFixed(2)}s)`;
+    status.className = 'status ok';
+
+    // Convert to WAV and play
+    const wavBlob = encodeWav(samples, 48000);
+    lastTxAudioBlob = wavBlob;
+    const url = URL.createObjectURL(wavBlob);
+
+    const audioEl = document.getElementById('tx-audio');
+    audioEl.src = url;
+    audioEl.style.display = 'block';
+    audioEl.play();
+
+    document.getElementById('tx-dl-btn').style.display = '';
+    document.getElementById('tx-dl-btn').disabled = false;
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.className = 'status error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function downloadWav() {
+  if (!lastTxAudioBlob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(lastTxAudioBlob);
+  a.download = 'mogus.wav';
+  a.click();
+}
+
+// ── RX ─────────────────────────────────────────────────────────────
+
+async function toggleRecord() {
+  if (recording) {
+    await stopRecording();
+  } else {
+    await startRecording();
+  }
+}
+
+async function startRecording() {
+  const btn = document.getElementById('rx-btn');
+  const status = document.getElementById('rx-status');
+  const output = document.getElementById('rx-output');
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    audioCtx = new AudioContext({ sampleRate: 48000 });
+    sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+    pcmChunks = [];
+    liveChunkIndex = 0;
+    output.textContent = '';
+
+    // Reset the streaming demodulator
+    await pyodide.runPythonAsync('live_decode_reset()');
+
+    // Register an AudioWorklet that forwards PCM to main thread
+    const workletCode = `
+      class Recorder extends AudioWorkletProcessor {
+        process(inputs) {
+          const ch = inputs[0][0];
+          if (ch) this.port.postMessage(new Float32Array(ch));
+          return true;
+        }
+      }
+      registerProcessor('recorder', Recorder);
+    `;
+    const blob = new Blob([workletCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    await audioCtx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+
+    recorderNode = new AudioWorkletNode(audioCtx, 'recorder');
+    recorderNode.port.onmessage = (e) => {
+      pcmChunks.push(e.data);
+    };
+
+    sourceNode.connect(recorderNode);
+    recorderNode.connect(audioCtx.destination);
+
+    recording = true;
+    btn.textContent = 'stop';
+    btn.style.background = '#c33';
+    status.textContent = 'listening...';
+    status.className = 'status';
+
+    // Periodically feed new audio to the streaming demodulator
+    liveDecodeTimer = setInterval(() => liveDecodeTick(), 200);
+  } catch (e) {
+    status.textContent = 'mic error: ' + e.message;
+    status.className = 'status error';
+    console.error('mic error:', e);
+  }
+}
+
+let _liveDecoding = false;
+
+async function liveDecodeTick() {
+  if (_liveDecoding) return;  // skip if previous tick still running
+  if (liveChunkIndex >= pcmChunks.length) return;
+
+  _liveDecoding = true;
+  const status = document.getElementById('rx-status');
+  const output = document.getElementById('rx-output');
+
+  try {
+    // Gather new chunks since last feed
+    const newChunks = pcmChunks.slice(liveChunkIndex);
+    liveChunkIndex = pcmChunks.length;
+
+    const totalNew = newChunks.reduce((s, c) => s + c.length, 0);
+    const combined = new Float32Array(totalNew);
+    let off = 0;
+    for (const c of newChunks) {
+      combined.set(c, off);
+      off += c.length;
+    }
+
+    const jsSamples = Array.from(combined);
+    pyodide.globals.set('_live_chunk', pyodide.toPy(jsSamples));
+
+    const resultProxy = await pyodide.runPythonAsync('live_decode_feed(_live_chunk)');
+    const result = resultProxy.toJs();
+    resultProxy.destroy();
+
+    if (result.get('chars')) {
+      output.textContent += result.get('chars');
+    }
+
+    if (result.get('synced')) {
+      status.textContent = 'signal locked, decoding...';
+      status.className = 'status ok';
+    }
+
+    if (result.get('done')) {
+      const crc = result.get('crc');
+      const crcText = crc === true ? ' [CRC OK]' : (crc === false ? ' [CRC FAIL]' : '');
+      status.textContent = 'decoded' + crcText;
+      status.className = crc === false ? 'status error' : 'status ok';
+      // Auto-stop recording when frame is complete
+      await stopRecording();
+    }
+  } catch (e) {
+    console.error('live decode error:', e);
+  } finally {
+    _liveDecoding = false;
+  }
+}
+
+async function stopRecording() {
+  const btn = document.getElementById('rx-btn');
+  const status = document.getElementById('rx-status');
+
+  recording = false;
+  btn.textContent = 'record';
+  btn.style.background = '';
+
+  // Stop live decode timer
+  if (liveDecodeTimer) { clearInterval(liveDecodeTimer); liveDecodeTimer = null; }
+
+  // Feed any remaining chunks
+  if (liveChunkIndex < pcmChunks.length) {
+    await liveDecodeTick();
+  }
+
+  // Stop audio nodes
+  if (recorderNode) { recorderNode.disconnect(); recorderNode = null; }
+  if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioCtx) { await audioCtx.close(); audioCtx = null; }
+
+  const output = document.getElementById('rx-output');
+  if (!output.textContent) {
+    output.textContent = '(no signal detected)';
+    status.textContent = 'no frame found';
+    status.className = 'status error';
+  }
+}
+
+async function decodeFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const status = document.getElementById('rx-status');
+  const output = document.getElementById('rx-output');
+  status.textContent = 'Reading file...';
+  output.textContent = '';
+
+  try {
+    const arrayBuf = await file.arrayBuffer();
+    const tempCtx = new OfflineAudioContext(1, 1, 48000);
+    const audioBuf = await tempCtx.decodeAudioData(arrayBuf);
+
+    // Resample to 48kHz if needed
+    let samples;
+    if (audioBuf.sampleRate !== 48000) {
+      const offCtx = new OfflineAudioContext(1, Math.ceil(audioBuf.duration * 48000), 48000);
+      const src = offCtx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(offCtx.destination);
+      src.start();
+      const resampled = await offCtx.startRendering();
+      samples = resampled.getChannelData(0);
+    } else {
+      samples = audioBuf.getChannelData(0);
+    }
+
+    status.textContent = `Loaded ${samples.length} samples (${(samples.length / 48000).toFixed(2)}s), decoding...`;
+    await decodeAudioSamples(samples, status, output);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.className = 'status error';
+  }
+  input.value = '';
+}
+
+async function decodeAudioSamples(samples, statusEl, outputEl) {
+  try {
+    const jsSamples = Array.from(samples);
+    pyodide.globals.set('_rx_samples', pyodide.toPy(jsSamples));
+
+    const result = await pyodide.runPythonAsync(`
+decode_audio(_rx_samples)
+    `);
+
+    const text = result;
+    if (text) {
+      outputEl.textContent = text;
+      statusEl.textContent = 'Decoded successfully';
+      statusEl.className = 'status ok';
+    } else {
+      outputEl.textContent = '(no signal detected)';
+      statusEl.textContent = 'No frame found in audio';
+      statusEl.className = 'status error';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Decode error: ' + e.message;
+    statusEl.className = 'status error';
+  }
+}
+
+// ── WAV Encoder ────────────────────────────────────────────────────
+
+function encodeWav(samples, sampleRate) {
+  const numSamples = samples.length;
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+
+  function writeStr(offset, str) {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);         // PCM format chunk size
+  view.setUint16(20, 1, true);          // PCM = 1
+  view.setUint16(22, 1, true);          // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true);          // block align
+  view.setUint16(34, 16, true);         // bits per sample
+
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+
+  // Convert float64 to int16
+  for (let i = 0; i < numSamples; i++) {
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// ── Init ───────────────────────────────────────────────────────────
+
+initPyodide().catch(e => {
+  document.getElementById('loading-msg').textContent = 'Failed to load: ' + e.message;
+  console.error(e);
+});
+</script>
+</body>
+</html>

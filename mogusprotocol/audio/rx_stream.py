@@ -20,20 +20,25 @@ class RxStream:
         audio = rx.get_audio()
     """
 
-    def __init__(self, device=None, blocksize: int = 2048, max_seconds: float = 120.0):
+    def __init__(self, device=None, blocksize: int = 2048):
         self._buffer: deque[np.ndarray] = deque()
         self._lock = threading.Lock()
         self._blocksize = blocksize
         self._device = device
-        self._max_blocks = int(max_seconds * SAMPLE_RATE / blocksize)
         self._stream: sd.InputStream | None = None
+        self._peak_level: float = 0.0
+
+    @property
+    def peak_level(self) -> float:
+        """Peak amplitude of the most recent audio chunk (0.0–1.0)."""
+        with self._lock:
+            return self._peak_level
 
     def _callback(self, indata, frames, time_info, status):
         chunk = indata[:, 0].copy()
         with self._lock:
             self._buffer.append(chunk)
-            while len(self._buffer) > self._max_blocks:
-                self._buffer.popleft()
+            self._peak_level = float(np.max(np.abs(chunk)))
 
     def start(self):
         self._stream = sd.InputStream(

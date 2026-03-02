@@ -97,8 +97,7 @@ class PSKDemodulator:
         if len(audio) < ref_len:
             return -1
 
-        # Search first half of audio for the preamble
-        search_len = min(len(audio), max(len(audio) // 2, ref_len * 2))
+        search_len = len(audio)
 
         # Use FFT-based correlation for speed on long signals
         n_fft = 1
