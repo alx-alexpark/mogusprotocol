@@ -5,7 +5,7 @@ import numpy as np
 from mogusprotocol.dsp.modulator import PSKModulator
 from mogusprotocol.dsp.demodulator import PSKDemodulator
 from mogusprotocol.protocol.frame import build_frame, RxFrameParser
-from mogusprotocol.protocol.constants import SYNC_WORD
+from mogusprotocol.protocol.constants import SYNC_WORD, MODE_FEC_BPSK
 
 
 def test_frame_parser_sync_detection():
@@ -73,3 +73,43 @@ def test_loopback_with_noise():
 
     # With 20dB SNR we should get some output
     assert len(decoded) > 0, "Demodulator produced no output with 20dB SNR"
+
+
+def test_loopback_fec_clean():
+    """Loopback with FEC mode, no noise."""
+    text = "CQ FEC"
+    bits = build_frame(text, mode=MODE_FEC_BPSK)
+
+    mod = PSKModulator()
+    audio = mod.modulate(bits)
+
+    silence = np.zeros(1000)
+    audio_with_silence = np.concatenate([silence, audio, silence])
+
+    demod = PSKDemodulator(energy_threshold=0.001)
+    decoded = demod.demodulate(audio_with_silence)
+
+    assert len(decoded) > 0, "FEC loopback produced no output"
+
+
+def test_loopback_fec_with_noise():
+    """Loopback with FEC at ~12 dB SNR — FEC should help."""
+    text = "HELLO"
+    bits = build_frame(text, mode=MODE_FEC_BPSK)
+
+    mod = PSKModulator()
+    audio = mod.modulate(bits)
+
+    # ~12 dB SNR (noisier than the non-FEC test)
+    rng = np.random.default_rng(42)
+    noise_power = np.mean(audio ** 2) / 16  # SNR ~12dB
+    noise = rng.normal(0, np.sqrt(noise_power), len(audio))
+    noisy = audio + noise
+
+    silence = np.zeros(1000)
+    noisy = np.concatenate([silence, noisy, silence])
+
+    demod = PSKDemodulator(energy_threshold=0.001)
+    decoded = demod.demodulate(noisy)
+
+    assert len(decoded) > 0, "FEC loopback produced no output at 12dB SNR"

@@ -21,11 +21,16 @@ TAIL_SYMBOLS = 16  # trailing zeros to flush
 
 # Protocol version
 PROTOCOL_VERSION = 1
-MODE_BPSK = 0        # varicode encoding
-MODE_COMPRESSED = 1  # zlib + raw 8-bit bytes
+MODE_BPSK = 0            # varicode encoding
+MODE_COMPRESSED = 1      # zlib + raw 8-bit bytes
+MODE_FEC_BPSK = 2        # varicode + convolutional FEC + CRC-16
+MODE_FEC_COMPRESSED = 3  # zlib + convolutional FEC + CRC-16
 
 # Length field for compressed mode (16-bit payload byte count)
 LENGTH_BITS = 16
+
+# CRC
+CRC_BITS = 16
 
 # Varicode end-of-character
 VARICODE_SEPARATOR = [0, 0]
