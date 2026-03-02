@@ -141,12 +141,12 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "sounddevice" },
+    { name = "soundfile" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
-    { name = "soundfile" },
 ]
 
 [package.metadata]
@@ -156,7 +156,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "scipy", specifier = ">=1.12" },
     { name = "sounddevice", specifier = ">=0.4.6" },
-    { name = "soundfile", marker = "extra == 'dev'", specifier = ">=0.12" },
+    { name = "soundfile", specifier = ">=0.12" },
 ]
 provides-extras = ["dev"]
 
