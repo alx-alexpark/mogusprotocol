@@ -6,9 +6,8 @@ import sys
 import click
 import numpy as np
 
-from ..protocol.frame import build_frame
+from ..protocol.frame import encode_audio
 from ..protocol.constants import SAMPLE_RATE
-from ..dsp.modulator import PSKModulator
 from ..dsp.demodulator import PSKDemodulator
 
 
@@ -90,11 +89,7 @@ def tx(text: str, output: str | None, device: int | None):
     """Transmit a text message."""
     click.echo(f"Encoding: {text!r}")
 
-    bits = build_frame(text)
-    click.echo(f"Frame: {len(bits)} bits")
-
-    mod = PSKModulator()
-    audio = mod.modulate(bits)
+    audio = encode_audio(text)
     click.echo(f"Audio: {len(audio)} samples ({len(audio)/SAMPLE_RATE:.2f}s)")
 
     if output:

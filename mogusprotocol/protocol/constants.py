@@ -16,11 +16,16 @@ SYNC_WORD = 0b0111_0001_0100_1110  # 16-bit magic: 0x714E
 SYNC_BITS = 16
 VERSION_BITS = 8
 MODE_BITS = 8
-HEADER_BITS = SYNC_BITS + VERSION_BITS + MODE_BITS
+FRAME_IDX_BITS = 8    # 0-indexed frame number (0-254, 255 reserved)
+TOTAL_FRAMES_BITS = 8  # total frame count (1-255, 0 = unknown/streaming)
+HEADER_BITS = SYNC_BITS + VERSION_BITS + MODE_BITS + FRAME_IDX_BITS + TOTAL_FRAMES_BITS
 TAIL_SYMBOLS = 16  # trailing zeros to flush
 
+# Multi-frame chunking
+MAX_FRAME_PAYLOAD_BYTES = 32  # max payload bytes per frame
+
 # Protocol version
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MODE_BPSK = 0            # varicode encoding
 MODE_COMPRESSED = 1      # zlib + raw 8-bit bytes
 MODE_FEC_BPSK = 2        # varicode + convolutional FEC + CRC-16

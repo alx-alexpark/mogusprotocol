@@ -7,6 +7,9 @@ arrive.  Two phases:
    reference preamble to find frame start.
 2. DEMODULATING – extract one symbol at a time, feed bits to RxFrameParser,
    yield characters immediately.
+
+Supports multi-frame messages: after completing one frame, resets to
+searching mode to find the next frame's preamble.
 """
 
 import numpy as np
@@ -24,7 +27,10 @@ def _build_reference_preamble() -> np.ndarray:
 
 
 class StreamingDemodulator:
-    """Incremental demodulator that yields decoded characters as audio arrives."""
+    """Incremental demodulator that yields decoded characters as audio arrives.
+
+    Tracks decoded frames by index and reassembles text across frames.
+    """
 
     def __init__(self, energy_threshold: float = 0.1):
         self.energy_threshold = energy_threshold
@@ -45,6 +51,9 @@ class StreamingDemodulator:
         self._prev_phase = 0.0
         self._done = False
         self._last_search_len = 0  # avoid re-searching same audio
+        self._frames: dict[int, str] = {}
+        self._total_frames: int | None = None
+        self._frames_received = 0
 
     @property
     def done(self) -> bool:
@@ -61,6 +70,14 @@ class StreamingDemodulator:
     @property
     def crc_ok(self) -> bool | None:
         return self._parser.crc_ok
+
+    @property
+    def frames_received(self) -> int:
+        return self._frames_received
+
+    @property
+    def total_frames(self) -> int | None:
+        return self._total_frames
 
     def feed(self, audio_chunk: np.ndarray) -> list[str]:
         """Feed an audio chunk and return any newly decoded characters.
@@ -184,11 +201,29 @@ class StreamingDemodulator:
                 chars.append(ch)
 
             if self._parser.is_idle():
-                self._done = True
+                # Commit any pending frame data (e.g. varicode)
+                self._parser.finalize_frame()
+
+                # Frame complete — update tracking
+                if self._parser.frame_idx is not None:
+                    self._frames_received = len(self._parser.frames)
+                if self._parser.total_frames is not None:
+                    self._total_frames = self._parser.total_frames
+
+                if self._parser.all_frames_received:
+                    self._done = True
+                else:
+                    # Reset for next frame: go back to searching
+                    self._parser.reset_for_next_frame()
+                    self._searching = True
+                    self._last_search_len = 0
+                    # Trim consumed audio
+                    self._audio_buf = self._audio_buf[self._demod_pos:]
+                    self._demod_pos = 0
                 break
 
         # Trim consumed audio to keep memory bounded
-        if self._demod_pos > 0:
+        if self._demod_pos > 0 and not self._searching:
             self._audio_buf = self._audio_buf[self._demod_pos:]
             self._demod_pos = 0
 

@@ -132,7 +132,7 @@ def test_frame_fec_detects_corruption():
 
     # Corrupt a large burst in the payload area (past header)
     corrupted = list(bits)
-    payload_start = 64 + 16 + 8 + 8 + 16  # preamble + sync + ver + mode + length
+    payload_start = 64 + 16 + 8 + 8 + 8 + 8 + 16  # preamble + sync + ver + mode + frame_idx + total_frames + length
     for i in range(20):
         if payload_start + i < len(corrupted):
             corrupted[payload_start + i] ^= 1

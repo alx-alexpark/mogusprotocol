@@ -152,21 +152,17 @@ async function initPyodide() {
 
   loadingMsg.textContent = 'Initializing modem...';
   await pyodide.runPythonAsync(`
-from mogusprotocol.protocol.frame import build_frame
-from mogusprotocol.dsp.modulator import PSKModulator
+from mogusprotocol.protocol.frame import encode_audio
 from mogusprotocol.dsp.demodulator import PSKDemodulator
 from mogusprotocol.dsp.streaming_demod import StreamingDemodulator
 from mogusprotocol.protocol.constants import SAMPLE_RATE
 import numpy as np
 
-_modulator = PSKModulator()
 _demodulator = PSKDemodulator()
 _streaming_demod = None
 
 def encode_message(text):
-    bits = build_frame(text)
-    audio = _modulator.modulate(bits)
-    return audio
+    return encode_audio(text)
 
 def decode_audio(samples_js):
     audio = np.array(samples_js, dtype=np.float64)
@@ -187,6 +183,7 @@ def live_decode_feed(samples_js):
         "synced": _streaming_demod.synced,
         "done": _streaming_demod.done,
         "crc": _streaming_demod.crc_ok,
+        "decoded_text": _streaming_demod.decoded_text,
     }
   `);
 
@@ -392,6 +389,8 @@ async function liveDecodeTick() {
 
     if (result.get('done')) {
       const crc = result.get('crc');
+      const decoded = result.get('decoded_text');
+      if (decoded) output.textContent = decoded;
       const crcText = crc === true ? ' [CRC OK]' : (crc === false ? ' [CRC FAIL]' : '');
       status.textContent = 'decoded' + crcText;
       status.className = crc === false ? 'status error' : 'status ok';
