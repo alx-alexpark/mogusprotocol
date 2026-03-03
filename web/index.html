@@ -200,7 +200,7 @@ async function installPythonSources() {
   const el = document.getElementById('python-sources');
   let sources;
   const raw = el.textContent.trim();
-  if (raw && raw !== '__PYTHON_SOURCES__' && raw.startsWith('{')) {
+  if (raw && !raw.startsWith('__') && raw.startsWith('{')) {
     // Built mode: sources are inlined
     sources = JSON.parse(raw);
   } else {

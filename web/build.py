@@ -30,7 +30,7 @@ def build():
 
     template = TEMPLATE.read_text(encoding="utf-8")
     sources_json = json.dumps(sources)
-    output = template.replace("__PYTHON_SOURCES__", sources_json)
+    output = template.replace("__PYTHON_SOURCES__", sources_json, 1)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "index.html"
